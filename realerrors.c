@@ -13,8 +13,12 @@
 #include <signal.h>
 #include <inttypes.h>
 #include <execinfo.h>
+#include <sys/resource.h>
+
 
 // #include <sys/siginfo.h>
+
+#include "symaddr.h"
 
 #define BUF_SIZE 2048
 #define MAX_STRARR_LEN 8
@@ -32,6 +36,7 @@
 #define R9  regs.r9 
 
 #define ENDER "STR_END"
+#define LOG_FILE 0
 
 // used to pass a list of pointers between functions
 typedef struct {
@@ -40,51 +45,6 @@ typedef struct {
 } uint64_array_t;
 
 char child_process_name[128] = "\0";
-
-// print the file and line of a given address 
-void trace_maddr(void *addr){
-    char cmd[256];
-
-    // get the name of the binary process run
-    // char path[64];
-    // ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
-    // if (n < 0) {
-    //     perror("readlink");
-    //     return;
-    // }
-    // path[n] = '\0';
-
-    if (strlen(child_process_name) == 0){
-        printf("child_process_name not set\n");
-        return;
-    }
-
-    // command line call to get line numbers
-    snprintf(cmd, sizeof(cmd), "addr2line -f -e %s %p", child_process_name, addr);
-    system(cmd);
-}
-
-void print_stack(void) {
-    void *buf[64];
-    int n = backtrace(buf, 64);
-    char **syms = backtrace_symbols(buf, n);
-
-    if (!syms) {
-        perror("backtrace_symbols");
-        return;
-    }
-
-    // only the stack trace the user cars about
-    for (int i = 0; i < n; i++) {
-        // printf("%s\n", syms[i]);
-        trace_maddr(buf[i]);
-        // printf("%p\n", buf[i]);
-    }
-
-    free(syms);
-}
-
-
 
 int main(int argc, char** argv) {
     // Call fork to create a child process
@@ -115,6 +75,10 @@ int main(int argc, char** argv) {
         // Stop the process so the tracer can catch it
         raise(SIGSTOP);
 
+        // attatch tracee Library 
+        setenv("LD_PRELOAD", "traceeLib.so", 1); 
+
+
         // run the args
         if(execvp(cmd, args)) {
             perror("execvp failed");
@@ -125,12 +89,14 @@ int main(int argc, char** argv) {
         // Wait for the child to stop
 
         // Redirect ALL printf() to log for the tracer
-        FILE *logfile = freopen("syscall_trace.log", "w", stdout);
-        if (!logfile) {
-            perror("Failed to open logfile");
-            exit(2);
+        if (LOG_FILE){
+            FILE *logfile = freopen("syscall_trace.log", "w", stdout);
+            if (!logfile) {
+                perror("Failed to open logfile");
+                exit(2);
+            }
+            setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for real-time logging
         }
-        setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering for real-time logging
 
         // track child status
         int status;
@@ -144,15 +110,11 @@ int main(int argc, char** argv) {
         } while(!WIFSTOPPED(status));
 
         // We are now attached to the child process
-        printf("Attached!\n");
+        if (LOG_FILE) printf("Attached!\n");
 
         // loop vars
         bool running = true;
         int last_signal = 0;
-        // bool at_entry = true;
-        // char sys_call_args[7][BUF_SIZE];
-        // int outputType = POINTER;
-        // char syscall_name[64];
 
         // Now repeatedly resume and trace the program
         while(running) {
@@ -172,32 +134,149 @@ int main(int argc, char** argv) {
             }
 
             if(WIFEXITED(status)) {
-                printf("Child exited with status %d\n", WEXITSTATUS(status));
+                printf("User Program exited with status %d\n", WEXITSTATUS(status));
                 running = false;
             } else if(WIFSIGNALED(status)) {
                 int sig = WTERMSIG(status);
-                printf("Child terminated with signal %d (%s)\n", sig, strsignal(sig));
+                printf("User Program terminated with signal %d (%s)\n", sig, strsignal(sig));
                 running = false;
             } else if(WIFSTOPPED(status)) {
                 // Get the signal delivered to the child
                 last_signal = WSTOPSIG(status);
 
                 if(last_signal == SIGSEGV){
-                    printf("signal is SIGSEGV\n");
+                    if (LOG_FILE) printf("signal is SIGSEGV\n");
                     // handle segfault
                     
                     siginfo_t info;
                     ptrace(PTRACE_GETSIGINFO, child_pid, 0, &info);
-                    printf("faulting memory address: %p\n", info.si_addr);
+                    uintptr_t faultingMemAddress = (uintptr_t) info.si_addr;
 
-                    // trace_maddr(info.si_addr);
-                    print_stack();
-                    // if addres 0 user is derefrencing a pointer
+                    if(faultingMemAddress == 0){
+                        if (LOG_FILE) printf("Null Pointer Deref\n");
+                        continue;
+                    }
 
+                    if (LOG_FILE) printf("Faulting memory address: %p\n", (void *) faultingMemAddress);
 
-                    // kill child proccess
-                    kill(child_pid, SIGTERM); 
-                    running = false;
+                    // read maps to get perms
+                    char buf[256];
+                    snprintf(buf, 256, "/proc/%d/maps", child_pid);
+                    FILE *fp = fopen(buf, "r");
+                    if (!fp) return 0;
+                    uintptr_t stack_start, stack_end;
+                    uintptr_t start, end;
+                    char perms[5];
+                    char name[256];
+                    char line[1024];
+                    while (fgets(line, sizeof(line), fp)) {
+                        // printf("%s", line);
+                        strcpy(name, "Anonomous Memory (Likely Malloc or MMAP, posible Guard Page)");
+                        sscanf(line, "%lx-%lx %4s %*x %*x:%*x %*u %255[^\n]", &start, &end, perms, name);
+                        if (faultingMemAddress >= start && faultingMemAddress < end){
+                            if (LOG_FILE) printf("Incorrect Memory Access happened in %s\n", name);
+                            printf("File Permissions are %s\n", perms);
+                        }
+
+                        if (strcmp(name, "[stack]")){
+                            stack_start = start;
+                            stack_end = end;
+                        }
+                    }
+                    fclose(fp);
+
+                    if (LOG_FILE) printf("stack Addr Range: %p - %p\n", (void*) stack_start, (void*) stack_end);
+
+                    // get register info
+                    struct user_regs_struct regs;
+                    uintptr_t rip;
+                    if (ptrace(PTRACE_GETREGS, child_pid, NULL, &regs) == -1) {
+                        perror("ptrace(GETREGS) failed");
+                    } else {
+                        rip = (uintptr_t)regs.rip;
+                        if (LOG_FILE) printf("RIP: %p\n", (void *)rip);
+                    }
+
+                    // seg fault types
+                    switch (info.si_code)
+                    {
+                    case SEGV_MAPERR:
+                        // address not mapped at all
+                        if (faultingMemAddress < stack_start && faultingMemAddress /* > stack_start - 0x10000 */){
+                            // likely a stack overflow, fault just below the stack
+                            if (LOG_FILE) printf("Stack Overflow\n");
+
+                            // get tracee lib variable location
+                            uintptr_t slot = get_tracee_symbol_addr(child_pid, "traceeLib.so", "./traceeLib.so", "pending_addr");
+                            if (!slot) {
+                                fprintf(stderr, "failed to resolve symbol address\n");
+                            } else {
+                                // put rip info into the tracee var location
+                                if (ptrace(PTRACE_POKEDATA, child_pid, (void *)slot, (void *)rip) == -1) {
+                                    perror("ptrace(POKEDATA) failed");
+                                }
+                            }
+                            last_signal = SIGUSR1;
+                            continue;
+                        } else {
+                            printf("Access to Unmapped Memory. TBD\n");
+                        }
+                        break;
+                    case SEGV_ACCERR:
+                        // perms error rwxp
+                        if (faultingMemAddress == rip){
+                            // failed on attempt to executre code in memory
+                            if (perms[2] == 'x'){
+                                printf("Address Space has Execute Permisions, IDK Cause of Problem\n");
+                            } else {
+                                printf("Code attempted to execute code by jumping to memory with execution permisons disallowed.\n");
+                            }
+                        } else {
+                            // read or write error
+                            if (perms[1] == 'w'){
+                                if (perms[0] == 'r'){
+                                    printf("Address space is Readable and Writable, IDK cause of Problem\n");
+                                } else{
+                                    printf("Address Space is Not Readable\n");
+                                }
+                            } else {
+                                // TODO: see why this is inconsistant
+                                if (perms[0] == 'r'){
+                                    printf("Address Space is Not Writable\n");
+                                } else {
+                                    printf("Address Space is Not Readable or Writeable\n");
+                                }
+                            }
+                        }
+                        break;
+                    default:
+                        break;
+                    }
+                        
+                    continue;
+                }
+
+                if (last_signal == SIGBUS){
+                    printf("User Program hit a Bus Error\n");
+                    
+                    siginfo_t si;
+                    if (ptrace(PTRACE_GETSIGINFO, child_pid, 0, &si) == -1) {
+                        perror("PTRACE_GETSIGINFO");
+                        exit(EXIT_FAILURE);
+                    }
+
+                    // if (si.si_signo == SIGBUS) {
+                    //     if (__linux__){
+                    //         printf("  fault address: %p\n", si.si_addr);
+                    //     } else{
+                    //         printf("  signal stop: signo=%d si_code=%d\n", si.si_signo, si.si_code);
+                    //     }
+                    // }
+
+                    // add sig handler for SIGBUS with custom user info
+                    last_signal = SIGSEGV;
+
+                    continue;
                 }
 
                 // If the signal was a SIGTRAP, we stopped because of a system call
@@ -239,4 +318,3 @@ int main(int argc, char** argv) {
     }
     return 0;
 }
-                  
