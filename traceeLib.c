@@ -23,9 +23,10 @@ typedef struct {
     size_t total_size;    // total mapping bytes
 } recovery_stack_t;
 
+// recovery stack vars
+static stack_t ss;
 static recovery_stack_t g_rs;
 static int g_rs_ready = 0;
-
 static ucontext_t g_recovery_uc;
 static ucontext_t g_handler_uc;
 
@@ -43,6 +44,7 @@ int allocate_recovery_stack(recovery_stack_t *out, size_t usable_size) {
     size_t rounded = (usable_size + page - 1) & ~(page - 1);
     size_t total = rounded + page;
 
+    // map new mem to act as our stack for recovery purposes
     void *mem = mmap(NULL, total, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem == MAP_FAILED) return -3;
@@ -71,17 +73,16 @@ static int setup_recovery_context(void) {
     return 0;
 }
 
-static stack_t ss;
-
 __attribute__((constructor)) void init(void)
 {
-
+    // allocate the recovery stack for overflow errors
     if (allocate_recovery_stack(&g_rs, 1 << 20) != 0) {
         perror("allocate recovery stack");
         exit(EXIT_FAILURE);
     }
     g_rs_ready = 1;
 
+    // create another context to switch to 
     if (setup_recovery_context() != 0) {
         perror("setup_recovery_context");
         _exit(EXIT_FAILURE);
@@ -102,6 +103,7 @@ __attribute__((constructor)) void init(void)
 
     struct sigaction sa;
 
+    // settup signal handlers
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = segfault_handler;
     sa.sa_flags = SA_SIGINFO;   // main stack
@@ -121,10 +123,11 @@ __attribute__((constructor)) void init(void)
         perror("sigaction SIGUSR1");
         exit(EXIT_FAILURE);
     }
-
-    // set_disable_tracking(0);
 }
 
+
+// when code finishes
+// node this does not run when we exit()
 __attribute__((destructor))
 void fini(void) {
     // runs after main() returns, before process exits
@@ -140,25 +143,28 @@ void fini(void) {
     ss.ss_sp = NULL;
 
     // get the mem leaks
+    // this function is not fully opperational, there is something in our code that allocates but does not free
     // check_memory_leaks();
 }
 
 static void recovery_entry(void) {
+    // minimal function to handle stack overflows
     write(STDERR_FILENO, "Stack Overflow Related to: ", 36);
     print_location((void*) pending_addr);
     _exit(EXIT_FAILURE); 
 }
 
 void secondary_stack_handler(int signal, siginfo_t *info, void *ctx){
+    // signal handler for stack overflows
     swapcontext(&g_handler_uc, &g_recovery_uc);
     _exit(EXIT_FAILURE);
 }
 
-// sig alt stack 
 void segfault_handler(int signal, siginfo_t *info, void *ctx){
     // printf("Real Erros Handling Seg Fault\n");
     intptr_t seg_fault_address = (intptr_t)(info->si_addr);
 
+    // do the trace using the real malloc
     set_disable_tracking(1);
     printf("Stack Trace:\n");
     if (!print_stack()){
@@ -169,11 +175,10 @@ void segfault_handler(int signal, siginfo_t *info, void *ctx){
     }
     set_disable_tracking(0);
 
-
+    // give info
     if(seg_fault_address == 0){
         printf("Null Pointer Dereference Error\n");
     } 
 
-    
     _exit(EXIT_FAILURE);
 }

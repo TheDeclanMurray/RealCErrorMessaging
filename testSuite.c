@@ -6,13 +6,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-
 int main(int argc, char **argv);
 
 void deref(){
-/* Segmentation fault by dereferencing NULL pointer */
-        int *p = NULL;
-        *p = 42;
+    // Segmentation fault by dereferencing NULL pointer
+    int *p = NULL;
+    *p = 42;
 }
 
 void rec(int argc, char **argv);
@@ -22,33 +21,26 @@ void rec_help(int argc, char **argv){
 }
 
 void rec(int argc, char **argv){
-/* Segmentation fault by infinite recursion */
+    // Segmentation fault by infinite recursion 
     rec_help(argc, argv);
 }
 
-void bus_hardware(){
-/* Bus error by writing to read-only memory */
-// sometimes a bus error on some computers 
-        char * str = "Segmentation Fault!";
-        str[0] = 's';
-
-}
-
 void twofree (){
-        /* "Trace trap" by double free */
-        char * s = malloc(sizeof(char) * 10);
-        free(s);
-        free(s);
+    // "Trace trap" by double free
+    char * s = malloc(sizeof(char) * 10);
+    free(s);
+    free(s);
 }
 
 void bounds () {
-        /* This code does not always cause a segfault, but is still undefined behavior */
-        char * s = malloc(sizeof(char) * 10);
-        s[10] = 'a';
-        free(s);
+    // This code does not always cause a segfault, but is still undefined behavior
+    char * s = malloc(sizeof(char) * 10);
+    s[10] = 'a';
+    free(s);
 }
 
 void bus() {
+    // causes a bus error
     const char *path = "busdemo.tmp";
     int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) { perror("open"); return; }
@@ -68,8 +60,8 @@ void bus() {
     return;
 }
 
-// write to protected memory
 void wonprot(void) {
+    // write to protected memory
     long page = sysconf(_SC_PAGESIZE);
     if (page <= 0) return;
 
@@ -90,29 +82,59 @@ void wonprot(void) {
     munmap(buf, page);
 }
 
+// run in all variations in order to get the overhead given a real program, not just a direct error right away
+void no_errors(int iterations){
+    // run a bunch of itterations allocating and freeing memory
+    for(int i = 0; i < iterations; i++){
+        char *var = malloc(64);
+
+        // prevent compiler optimizing everything away
+        var[0] = 'T';
+        var[1] = 'e';
+        var[2] = 's';
+        var[3] = 't';
+        var[4] = '\0';
+
+        if(i % 100 == 0){
+            // used to test tracer overhead
+            printf("%s\n", var);
+        }
+
+        free(var);
+    }
+}
+
 int main(int argc, char **argv) {
-    char* type = argv[1];
-    if (type == NULL) {
-        printf("Usage: %s <type>\n", argv[0]);
-        printf("Types: deref, rec, bus, 2free, bounds, wonprot\n");
+    if (argc < 3){
+        printf("Usage: %s <type> <iterations>\n", argv[0]);
+        printf("Types: deref, rec, bus, 2free, bounds, wonprot, control\n");
         return 1;
-    } else if(strcmp(type, "deref") == 0) {
+    }
+    char* type = argv[1];
+    int its = atoi(argv[2]);
+    if(strcmp(type, "deref") == 0) {
+        no_errors(its);
         deref();
     } else if(strcmp(type, "rec") == 0) {
+        no_errors(its);
         rec(argc, argv);
     } else if(strcmp(type, "bus") == 0) {
+        no_errors(its);
         bus();
     } else if(strcmp(type, "2free") == 0) {
+        no_errors(its);
         twofree();
     } else if(strcmp(type, "bounds") == 0) {
+        no_errors(its);
         bounds();
     } else if(strcmp(type, "wonprot") == 0){
+        no_errors(its);
         wonprot();
-    } else if (strcmp(type, "next") == 0){
-
+    } else if (strcmp(type, "control") == 0){
+        no_errors(its);
     } else {
         printf("Unknown type: %s\n", type);
-        printf("Types: deref, rec, bus, 2free, bounds, wonprot\n");
+        printf("Types: deref, rec, bus, 2free, bounds, wonprot, control\n");
         return 1;
     }
     return 0;

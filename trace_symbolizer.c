@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include "trace_symbolizer.h"
 
 #include <execinfo.h>
@@ -13,6 +12,7 @@
 #include <dwarf.h>
 #include <ctype.h>
 
+// i think this is needed
 #ifdef _WIN32
   #include <direct.h>
   #define getcwd _getcwd
@@ -22,16 +22,18 @@
 
 #define NORMALIZE_ADDR true
 
-uintptr_t exe_base_from_maps(void)
-{
+uintptr_t exe_base_from_maps(void) {
+    // get path
     char exe_path[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
     if (len < 0) return 0;
     exe_path[len] = '\0';
 
+    // open file
     FILE *fp = fopen("/proc/self/maps", "r");
     if (!fp) return 0;
 
+    // get start of address range
     char line[1024];
     while (fgets(line, sizeof(line), fp)) {
         unsigned long start = 0, end = 0, off = 0;
@@ -47,9 +49,9 @@ uintptr_t exe_base_from_maps(void)
     return 0;
 }
 
+// use Dwarf functions to walk the tables
 static int lookup_function_name(Dwarf_Debug dbg, Dwarf_Die cu_die, uintptr_t addr,
-                                char *func_out, size_t func_out_sz)
-{
+                                char *func_out, size_t func_out_sz){
     Dwarf_Die child = 0;
     Dwarf_Die cur = 0;
     Dwarf_Half tag = 0;
@@ -193,6 +195,7 @@ int get_location(void *addr, char func[64], char file[128], int *line)
     if (n < 0) return -1;
     exe[n] = '\0';
 
+    // get the start of the address range
     uintptr_t rel = (uintptr_t) addr;
     if (NORMALIZE_ADDR){
         uintptr_t base = exe_base_from_maps();
@@ -203,9 +206,7 @@ int get_location(void *addr, char func[64], char file[128], int *line)
 
     char line_out[512];
     if (lookup_line_libdwarf(exe, rel, func, sizeof(char)*64, line_out, sizeof(line_out)) == 0) {
-        // -------------------
-        // Step 1: Split file path and line number
-        // -------------------
+        // Split file path and line number
         const char* colon = strrchr(line_out, ':');
         char full_path[512];
 
@@ -221,9 +222,7 @@ int get_location(void *addr, char func[64], char file[128], int *line)
             full_path[sizeof(full_path) - 1] = '\0';
         }
 
-        // -------------------
-        // Step 2: Make path relative to cwd if possible
-        // -------------------
+        // Make path relative to cwd if possible
         char cwd[1024];
         if (getcwd(cwd, sizeof(cwd))) {
             size_t cwd_len = strlen(cwd);
@@ -241,14 +240,11 @@ int get_location(void *addr, char func[64], char file[128], int *line)
             strncpy(file, full_path, 127);
             file[127] = '\0';
         }
-        // -------------------
-        // Step 3: Copy function name and line number
-        // -------------------
+        // copy function name and line number
         if (func) func[63] = '\0'; // ensure null-termination (func is already filled by lookup_line_libdwarf)
 
         return 0;
     }
-
     
     return -1;
 }
@@ -257,14 +253,13 @@ int print_location(void *addr){
     char func[64];
     char file[128];
     int line = -1;
-    char buffer[256]; // large enough for "func file:line\n"
+    char buffer[256]; 
 
     int status = get_location(addr, func, file, &line);
     if (status == 0){
-        // snprintf is safe: it won't overflow and always null-terminates
         int n = snprintf(buffer, sizeof(buffer), "%s:%d\t\t%s\n", file, line, func);
         
-        // write the string (without the null terminator)
+        // write the string 
         if (n > 0) {
             if (n > (int)sizeof(buffer) - 1) n = sizeof(buffer) - 1; // truncate if too long
             write(STDERR_FILENO, buffer, n);
@@ -275,9 +270,11 @@ int print_location(void *addr){
 
 bool print_stack(void)
 {
+    // get the backtrace
     void *buf[64];
     int n = backtrace(buf, 64);
 
+    // walk backtrace 
     bool status = false;
     for (int i = n-1; i >= 2; i--) {
         status = (print_location(buf[i]) == 0) || status;    

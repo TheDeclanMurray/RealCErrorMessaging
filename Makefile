@@ -7,28 +7,23 @@ LOCAL = /home/murrayde/local
 LIBDWARF_INC = -I$(LOCAL)/include
 LIBDWARF_LIB = -L$(LOCAL)/lib -ldwarf -lelf
 
-
-all: realerrors test_basic segfaulter segfaulter2 traceeLib.so
+all: realerrors testSuite traceeLib.so overhead lkbug
 
 realerrors: realerrors.c symaddr.c symaddr.h
 	$(CC) $(CFLAGS) -o realerrors realerrors.c symaddr.c
 
-# traceeLib.so: traceeLib.c trace_symbolizer.c trace_symbolizer.h
-# 	$(CC) $(CLIBFLAGS) -shared -fPIC -o traceeLib.so traceeLib.c trace_symbolizer.c
-
 traceeLib.so: traceeLib.c trace_symbolizer.c trace_symbolizer.h memHelper.c memHelper.h
 	$(CC) $(CFLAGS) $(LIBDWARF_INC) -fPIC -shared -Wl,-rpath,/home/murrayde/local/lib -o $@ traceeLib.c trace_symbolizer.c memHelper.c $(LIBDWARF_LIB)
 
-test_basic: test_basic.c 
-	$(CC) $(CTESTFLAGS) -o test_basic test_basic.c 
+testSuite: testSuite.c 
+	$(CC) $(CTESTFLAGS) -o testSuite testSuite.c
 
-segfaulter: segfaulter.c 
-	$(CC) $(CTESTFLAGS) -o segfaulter segfaulter.c
+overhead: overhead.c
+	$(CC) $(CTESTFLAGS) -o overhead overhead.c
 
-segfaulter2: segfaulter2.c 
-	$(CC) $(CTESTFLAGS) -o segfaulter2 segfaulter2.c
-
+lkbug: linuxKernelBug.c
+	$(CC) $(CTESTFLAGS) -o lkbug linuxKernelBug.c
 
 clean:
-	rm -f realerrors test_basic segfaulter segfaulter2 traceeLib.so
+	rm -f realerrors testSuite traceeLib.so overhead lkbug
 

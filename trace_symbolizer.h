@@ -9,5 +9,4 @@ int print_location(void *addr);
 bool print_stack(void);
 uintptr_t exe_base_from_maps(void);
 
-
 #endif

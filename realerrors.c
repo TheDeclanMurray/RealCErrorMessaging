@@ -15,34 +15,10 @@
 #include <execinfo.h>
 #include <sys/resource.h>
 
-
-// #include <sys/siginfo.h>
-
 #include "symaddr.h"
 
-#define BUF_SIZE 2048
-#define MAX_STRARR_LEN 8
-
-#define NUMBER 0
-#define STRING 1
-#define STRARR 2
-#define POINTER 3
-
-#define RDI regs.rdi
-#define RSI regs.rsi
-#define RDX regs.rdx
-#define R10 regs.r10
-#define R8  regs.r8
-#define R9  regs.r9 
-
-#define ENDER "STR_END"
+// gloable variables for testing
 #define LOG_FILE 0
-
-// used to pass a list of pointers between functions
-typedef struct {
-    uint64_t data[MAX_STRARR_LEN];
-    size_t    length;
-} uint64_array_t;
 
 char child_process_name[128] = "\0";
 
@@ -76,8 +52,10 @@ int main(int argc, char** argv) {
         raise(SIGSTOP);
 
         // attatch tracee Library 
+        // TODO add to end of preload
+        // Note this may override LD_PRELOAD
+        // TODO: add this to the existing list of Preloaded libs
         setenv("LD_PRELOAD", "traceeLib.so", 1); 
-
 
         // run the args
         if(execvp(cmd, args)) {
@@ -148,12 +126,15 @@ int main(int argc, char** argv) {
                     if (LOG_FILE) printf("signal is SIGSEGV\n");
                     // handle segfault
                     
+                    // get memory access address
                     siginfo_t info;
                     ptrace(PTRACE_GETSIGINFO, child_pid, 0, &info);
                     uintptr_t faultingMemAddress = (uintptr_t) info.si_addr;
 
+                    // this is a Null Pointer Deref
                     if(faultingMemAddress == 0){
                         if (LOG_FILE) printf("Null Pointer Deref\n");
+                        // rest of code does not pertain to this error, continue
                         continue;
                     }
 
@@ -164,18 +145,22 @@ int main(int argc, char** argv) {
                     snprintf(buf, 256, "/proc/%d/maps", child_pid);
                     FILE *fp = fopen(buf, "r");
                     if (!fp) return 0;
+
+                    // vars to fill
                     uintptr_t stack_start, stack_end;
                     uintptr_t start, end;
                     char perms[5];
                     char name[256];
                     char line[1024];
                     while (fgets(line, sizeof(line), fp)) {
-                        // printf("%s", line);
+                        // get the details about particular memory locations
                         strcpy(name, "Anonomous Memory (Likely Malloc or MMAP, posible Guard Page)");
                         sscanf(line, "%lx-%lx %4s %*x %*x:%*x %*u %255[^\n]", &start, &end, perms, name);
                         if (faultingMemAddress >= start && faultingMemAddress < end){
+                            // if the memory access happened in a partiular section 
                             if (LOG_FILE) printf("Incorrect Memory Access happened in %s\n", name);
                             printf("File Permissions are %s\n", perms);
+                            continue;
                         }
 
                         if (strcmp(name, "[stack]")){
@@ -185,9 +170,9 @@ int main(int argc, char** argv) {
                     }
                     fclose(fp);
 
-                    if (LOG_FILE) printf("stack Addr Range: %p - %p\n", (void*) stack_start, (void*) stack_end);
+                    if (LOG_FILE) printf("Stack Addr Range: %p - %p\n", (void*) stack_start, (void*) stack_end);
 
-                    // get register info
+                    // get rip register info
                     struct user_regs_struct regs;
                     uintptr_t rip;
                     if (ptrace(PTRACE_GETREGS, child_pid, NULL, &regs) == -1) {
@@ -216,10 +201,12 @@ int main(int argc, char** argv) {
                                     perror("ptrace(POKEDATA) failed");
                                 }
                             }
+
+                            // set a particular signal to run a handler in its own stack
                             last_signal = SIGUSR1;
                             continue;
                         } else {
-                            printf("Access to Unmapped Memory. TBD\n");
+                            // relivent info for non segfaults is above
                         }
                         break;
                     case SEGV_ACCERR:
@@ -227,7 +214,7 @@ int main(int argc, char** argv) {
                         if (faultingMemAddress == rip){
                             // failed on attempt to executre code in memory
                             if (perms[2] == 'x'){
-                                printf("Address Space has Execute Permisions, IDK Cause of Problem\n");
+                                printf("Address Space does has Execute Permisions, IDK Cause of Problem.\n");
                             } else {
                                 printf("Code attempted to execute code by jumping to memory with execution permisons disallowed.\n");
                             }
@@ -265,52 +252,10 @@ int main(int argc, char** argv) {
                         exit(EXIT_FAILURE);
                     }
 
-                    // if (si.si_signo == SIGBUS) {
-                    //     if (__linux__){
-                    //         printf("  fault address: %p\n", si.si_addr);
-                    //     } else{
-                    //         printf("  signal stop: signo=%d si_code=%d\n", si.si_signo, si.si_code);
-                    //     }
-                    // }
-
                     // add sig handler for SIGBUS with custom user info
                     last_signal = SIGSEGV;
 
                     continue;
-                }
-
-                // If the signal was a SIGTRAP, we stopped because of a system call
-                if(last_signal == SIGTRAP) {
-                    // Read register state from the child process
-                    struct user_regs_struct regs;
-                    if(ptrace(PTRACE_GETREGS, child_pid, NULL, &regs)) {
-                        perror("ptrace GETREGS failed");
-                        exit(2);
-                    }
-
-                    // Get the system call number
-                    size_t syscall_num = regs.orig_rax;
-                    
-                    
-                    // clear sys_call_args for next run
-                    // for (int i = 0; i < 7; i++){
-                    //     strcpy(sys_call_args[i], ENDER);
-                    // }
-
-                    // handle each system call number used
-                    switch (syscall_num) {
-                        case 0:
-                            // strcpy(syscall_name, "read");
-                            // strcpy(sys_call_args[0], syscall_name);
-                            // cstr(child_pid, RDI, NUMBER, sys_call_args[1]);
-                            // cstr(child_pid, RSI, POINTER, sys_call_args[2]);
-                            // cstr(child_pid, RDX, NUMBER, sys_call_args[3]);
-                            // outputType = NUMBER;
-                            break;
-                        default:
-                            // printf("Unknown syscall Number: %zu\n", syscall_num);
-                            break;
-                    }
                 }
                 last_signal = 0;
             }

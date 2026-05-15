@@ -1,7 +1,5 @@
-
 #include <stdio.h>
 #include <stdbool.h>
-
 
 #define TABLE_SIZE 1024
 #define CANARY 0xAD

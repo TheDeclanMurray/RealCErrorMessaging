@@ -1,10 +1,8 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <unistd.h>
 #include <inttypes.h>
-
 
 #include "memHelper.h"
 #include "trace_symbolizer.h"
@@ -20,7 +18,6 @@ static hashTable_t* mem_table = NULL;
 static int in_hook = 0;
 static int disable_tracking = 0;
 
-
 void* real_malloc(size_t size) {
     static malloc_fn_t real_malloc = NULL;
     if (!real_malloc) {
@@ -34,7 +31,6 @@ void* real_malloc(size_t size) {
     }
 
     void* ptr = real_malloc(size);
-    // fprintf(stderr, "malloc(%zu) = %p\n", size, ptr); // Optional logging
     return ptr;
 }
 
@@ -50,7 +46,6 @@ void real_free(void* ptr) {
         }
     }
 
-    // fprintf(stderr, "free(%p)\n", ptr); // Optional logging
     real_free(ptr);
 }
 
@@ -67,7 +62,6 @@ void* real_realloc(void* ptr, size_t size) {
     }
 
     void* new_ptr = real_realloc(ptr, size);
-    // fprintf(stderr, "realloc(%p, %zu) = %p\n", ptr, size, new_ptr); // Optional logging
     return new_ptr;
 }
 
@@ -103,6 +97,7 @@ memStruct_t* hashtable_lookup(hashTable_t* table, void* key) {
     size_t idx = ptr_hash(key);
     hashNode_t* node = table->buckets[idx];
 
+    // check if key in table
     while (node) {
         if (node->key == key) return &node->value;
         node = node->next;
@@ -115,6 +110,7 @@ void hashtable_remove(hashTable_t* table, void* key) {
     hashNode_t* node = table->buckets[idx];
     hashNode_t* prev = NULL;
 
+    // find key and remove it
     while (node) {
         if (node->key == key) {
             if (prev) prev->next = node->next;
@@ -128,6 +124,7 @@ void hashtable_remove(hashTable_t* table, void* key) {
 }
 
 hashTable_t* hashtable_create() {
+    // initialize table
     hashTable_t* table = real_malloc(sizeof(hashTable_t));
     for (int i = 0; i < TABLE_SIZE; i++) table->buckets[i] = NULL;
     return table;
@@ -139,6 +136,7 @@ void check_memory_leaks(void) {
 
     int leaks = 0;
 
+    // count active mem
     for (int i = 0; i < TABLE_SIZE; i++) {
         hashNode_t* node = mem_table->buckets[i];
         while (node) {
@@ -155,6 +153,7 @@ void check_memory_leaks(void) {
         }
     }
 
+    // print results
     if (leaks == 0) {
         fprintf(stderr, "[MEM CHECK] All memory freed correctly.\n");
     } else {
@@ -162,6 +161,7 @@ void check_memory_leaks(void) {
     }
 }
 
+// helper function
 void set_disable_tracking(int t){
     disable_tracking = t;
 }
@@ -206,7 +206,6 @@ void free(void* ptr) {
         if (!info->status){
             printf("Double Free Detected: %p\n", (void*) info->caller);
             print_location((void*) info->caller);
-            // printf("END\n");
             // exit(EXIT_FAILURE);
             return;
         }
@@ -216,7 +215,6 @@ void free(void* ptr) {
         if (*end != CANARY) {
             printf("Memory corruption detected.\nLikely an out of bounds error related to a variable allocated here:\n");
             print_location((void*) info->caller);
-            // printf("Note this is where the memory allocation was requested, not where the user used more memory than requested\n");
             exit(EXIT_FAILURE);
         }
         info->status = false;
@@ -237,7 +235,7 @@ void* realloc(void* ptr, size_t size) {
 
     memStruct_t* info = hashtable_lookup(mem_table, ptr);
     if (info) {
-        // Optional: check old canary before realloc
+        // check old canary before realloc
         unsigned char* old_end = (unsigned char*)ptr + info->size;
         if (*old_end != CANARY) fprintf(stderr, "Memory corruption before realloc at %p!\n", ptr);
 
